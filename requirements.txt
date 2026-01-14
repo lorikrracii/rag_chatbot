@@ -4,3 +4,6 @@ langchain
 langchain-community
 chromadb
 pypdf
+langchain-ollama
+langchain-chroma
+cryptography
