@@ -57,6 +57,7 @@ def retrieve(
     query: str,
     k: Optional[int] = None,
     *,
+    source_filename: Optional[str] = None,
     persist_directory: str = "chromadb",
     collection_name: str = "rag_docs",
     embed_model: str = "nomic-embed-text",
@@ -76,10 +77,25 @@ def retrieve(
     )
 
     # Returns: List[Tuple[Document, float]]
+    prefetch_k = max(top_k * 3, top_k)  # fetch more so filtering still leaves enough
     docs_and_scores: List[Tuple[Document, float]] = vs.similarity_search_with_score(
         query=query,
-        k=top_k,
+        k=prefetch_k,
     )
+
+    # Optional post-filter by filename (simple + robust)
+    if source_filename and source_filename.strip().lower() != "all":
+        wanted = source_filename.strip().lower()
+        filtered: List[Tuple[Document, float]] = []
+        for doc, score in docs_and_scores:
+            src = str((doc.metadata or {}).get("source", "")).lower()
+            if wanted in os.path.basename(src):
+                filtered.append((doc, score))
+        docs_and_scores = filtered
+
+    # finally cut to top_k
+    docs_and_scores = docs_and_scores[:top_k]
+
 
     results: List[RetrievalResult] = [
         RetrievalResult(doc=doc, score=float(score)) for doc, score in docs_and_scores

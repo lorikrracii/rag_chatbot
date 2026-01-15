@@ -69,6 +69,7 @@ def answer_question(
     *,
     k: Optional[int] = None,
     llm_model: Optional[str] = None,
+    source_filename: Optional[str] = None, 
     persist_directory: str = "chromadb",
     collection_name: str = "rag_docs",
     embed_model: str = "nomic-embed-text",
@@ -96,12 +97,14 @@ def answer_question(
     max_acceptable_score = _get_env_float("RAG_MAX_SCORE", 0.75)
 
     results = retrieve(
-        question,
-        k=top_k,
-        persist_directory=persist_directory,
-        collection_name=collection_name,
-        embed_model=embed_model,
-    )
+    question,
+    k=top_k,
+    source_filename=source_filename,
+    persist_directory=persist_directory,
+    collection_name=collection_name,
+    embed_model=embed_model,
+)
+
 
     if not results:
         return {

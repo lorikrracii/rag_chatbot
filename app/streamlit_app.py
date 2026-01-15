@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import sys
 import time
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -144,6 +145,52 @@ def now_hhmm() -> str:
     return datetime.now().strftime("%H:%M")
 
 
+def list_pdf_filenames() -> List[str]:
+    data_dir = os.getenv("DATA_DIR", "data/raw")
+    base = Path(data_dir)
+    if not base.exists():
+        return []
+    return sorted({p.name for p in base.rglob("*.pdf")})
+
+
+def health_check() -> Dict[str, Any]:
+    chroma_dir = os.getenv("CHROMA_DIR", "chromadb")
+    collection = os.getenv("CHROMA_COLLECTION", "rag_docs")
+    embed_model = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+    llm_model = os.getenv("RAG_LLM_MODEL", "qwen2.5:7b-instruct")
+
+    info: Dict[str, Any] = {
+        "chroma_dir": chroma_dir,
+        "collection": collection,
+        "embed_model": embed_model,
+        "llm_model": llm_model,
+        "chroma_dir_exists": Path(chroma_dir).exists(),
+    }
+
+    try:
+        from rag.retriever import get_vectorstore
+        vs = get_vectorstore(
+            persist_directory=chroma_dir,
+            collection_name=collection,
+            embed_model=embed_model,
+        )
+
+        count = None
+        try:
+            count = vs._collection.count()
+        except Exception:
+            pass
+
+        info["vectorstore_ok"] = True
+        info["vector_count"] = count
+    except Exception as e:
+        info["vectorstore_ok"] = False
+        info["vector_count"] = None
+        info["error"] = str(e)
+
+    return info
+
+
 def extract_sources(answer_text: str) -> List[str]:
     marker = "\nSources:\n"
     if not answer_text or marker not in answer_text:
@@ -165,6 +212,7 @@ def answer_without_sources(answer_text: str) -> str:
         return ""
     return answer_text.split(marker, 1)[0].strip() if marker in answer_text else answer_text.strip()
 
+
 def normalize_query(q: str) -> str:
     q = (q or "").strip()
     # short inputs like "CET1" or "Basel III" often retrieve poorly
@@ -172,15 +220,58 @@ def normalize_query(q: str) -> str:
         return f"Explain {q} in the context of banking regulation and capital requirements."
     return q
 
+def build_memory_hint(messages: List[Dict[str, Any]], max_user_turns: int = 2) -> str:
+    users = [m.get("content", "") for m in messages if m.get("role") == "user"]
+    users = [u.strip() for u in users if u.strip()]
+    last = users[-max_user_turns:]
+    if not last:
+        return ""
+    return "Previous user questions:\n- " + "\n- ".join(last)
+
 
 _SMALLTALK = re.compile(
     r"^\s*(hi|hello|hey|yo|sup|thanks|thank you|thx|good morning|good afternoon|good evening|how are you|who are you)\s*[!.?]*\s*$",
     re.IGNORECASE,
 )
 
+_INJECTION = re.compile(
+    r"(ignore (all|previous|prior) instructions|"
+    r"reveal (the )?(system|developer) prompt|"
+    r"(system|developer) prompt|developer message|"
+    r"jailbreak|do anything now|DAN|"
+    r"bypass|override|"
+    r"hidden rules|"
+    r"print your prompt)",
+    re.IGNORECASE,
+)
+
+_PUNCT_ONLY = re.compile(r"^\s*[\W_]+\s*$")
+
+
+def is_injection(text: str) -> bool:
+    return bool(_INJECTION.search(text or ""))
+
+
+def injection_reply() -> str:
+    return (
+        "I can’t help with attempts to override instructions or reveal system prompts.\n\n"
+        "Ask a normal question about the PDFs (e.g., CET1, RWAs, capital buffers), and I’ll answer with citations."
+    )
+
 
 def is_smalltalk(text: str) -> bool:
     return bool(_SMALLTALK.match(text or ""))
+
+
+def is_garbage_input(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return True
+    if _PUNCT_ONLY.match(t):
+        return True
+    if len(t) < 2:
+        return True
+    return False
 
 
 def smalltalk_reply(text: str) -> str:
@@ -237,7 +328,33 @@ with st.sidebar:
     if st.button("Clear chat"):
         st.session_state.clear()
         st.rerun()
+
+    pdf_names = list_pdf_filenames()
+    doc_choice = st.selectbox(
+        "Filter by document (filename)",
+        options=["All"] + pdf_names,
+        index=0,
+    )
+
     st.caption("Knowledge questions use your PDFs + citations. Small talk works too.")
+
+    with st.expander("Health check", expanded=False):
+        hc = health_check()
+
+        st.write("Chroma dir:", f"`{hc['chroma_dir']}`")
+        st.write("Collection:", f"`{hc['collection']}`")
+        st.write("Embed model:", f"`{hc['embed_model']}`")
+        st.write("LLM model:", f"`{hc['llm_model']}`")
+
+        st.write("DB folder exists:", "✅" if hc["chroma_dir_exists"] else "❌")
+
+        if hc.get("vectorstore_ok"):
+            st.write("Vectorstore:", "✅ loaded")
+            if hc.get("vector_count") is not None:
+                st.write("Vectors indexed:", hc["vector_count"])
+        else:
+            st.write("Vectorstore:", "❌ error")
+            st.caption(hc.get("error", "Unknown error"))
 
 
 # ---- Header
@@ -307,10 +424,38 @@ if pending:
         )
         st.rerun()
 
+    # injection guard (no retrieval)
+    if is_injection(pending):
+        st.session_state["last_sources"] = []
+        st.session_state["messages"].append(
+            {"role": "assistant", "content": injection_reply(), "ts": now_hhmm(), "sources": []}
+        )
+        st.rerun()
+
+    # garbage input guard (no retrieval)
+    if is_garbage_input(pending):
+        st.session_state["last_sources"] = []
+        st.session_state["messages"].append(
+            {"role": "assistant", "content": "Type a real question (not just punctuation 🙂).", "ts": now_hhmm(), "sources": []}
+        )
+        st.rerun()
+
     # RAG path
     with st.spinner("Thinking…"):
-        query = normalize_query(pending)
-        out: Dict[str, Any] = answer_question(query, k=4, llm_model="llama3.2:3b")
+        memory = build_memory_hint(st.session_state["messages"], max_user_turns=2)
+        base_query = normalize_query(pending)
+
+        if memory:
+            query = f"{memory}\n\nCurrent question:\n{base_query}"
+        else:
+            query = base_query
+
+        out: Dict[str, Any] = answer_question(
+            query,
+            k=4,
+            llm_model="llama3.2:3b",
+            source_filename=None if doc_choice == "All" else doc_choice,
+        )
 
 
     full = out.get("answer", "") or ""
@@ -318,7 +463,6 @@ if pending:
     sources = extract_sources(full)
     if content.strip() == "Not found in the provided documents.":
         sources = []
-
 
     st.session_state["last_sources"] = sources
     st.session_state["messages"].append({"role": "assistant", "content": content, "ts": now_hhmm(), "sources": sources})
