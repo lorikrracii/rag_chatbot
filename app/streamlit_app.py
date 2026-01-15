@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import re
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import streamlit as st
 
-# --- Ensure repo root is importable when Streamlit runs from /app ---
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -17,42 +18,49 @@ if str(ROOT) not in sys.path:
 from rag.answer import answer_question  # noqa: E402
 
 
-# -----------------------------
-# Page config + modern styling
-# -----------------------------
-st.set_page_config(page_title="RAG Chatbot", page_icon="📚", layout="wide")
+st.set_page_config(
+    page_title="RAG Chatbot",
+    page_icon="📚",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
 st.markdown(
     """
 <style>
-/* Layout */
-.block-container { padding-top: 1.0rem; padding-bottom: 2.0rem; max-width: 1120px; }
+.block-container { padding-top: 0.9rem; padding-bottom: 6.2rem; max-width: 1250px; }
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
-header {visibility: hidden;}
 
-/* App shell */
+/* Header */
 .rag-shell {
   border: 1px solid rgba(255,255,255,0.10);
-  border-radius: 22px;
-  padding: 18px 18px 14px 18px;
+  border-radius: 20px;
+  padding: 16px 18px;
   background:
     radial-gradient(1200px 600px at 0% 0%, rgba(99,102,241,0.18), transparent 55%),
     radial-gradient(1000px 500px at 100% 0%, rgba(16,185,129,0.14), transparent 55%),
     rgba(255,255,255,0.03);
   box-shadow: 0 10px 30px rgba(0,0,0,0.18);
 }
-.rag-title { font-size: 28px; font-weight: 760; letter-spacing: -0.6px; margin: 0; }
+.rag-title { font-size: 26px; font-weight: 760; letter-spacing: -0.5px; margin: 0; }
 .rag-subtitle { margin-top: 6px; opacity: 0.82; font-size: 14px; line-height: 1.35; }
-.rag-divider { border: none; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 0 10px 0; }
+.pill {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.03);
+  margin-right: 6px;
+  opacity: 0.88;
+}
 
-/* Chat layout */
-.rag-chat { margin-top: 10px; }
+/* Chat */
 .msg-row { display: flex; width: 100%; margin: 10px 0; }
 .msg-left { justify-content: flex-start; }
 .msg-right { justify-content: flex-end; }
 
-/* Bubbles */
 .bubble {
   border: 1px solid rgba(255,255,255,0.10);
   border-radius: 18px;
@@ -63,46 +71,80 @@ header {visibility: hidden;}
   line-height: 1.45;
 }
 .bubble-user {
-  max-width: 72%;
+  max-width: 74%;
   background: linear-gradient(180deg, rgba(99,102,241,0.25), rgba(255,255,255,0.03));
   border-color: rgba(99,102,241,0.26);
 }
 .bubble-assistant {
-  max-width: 82%;
+  max-width: 86%;
   background: linear-gradient(180deg, rgba(16,185,129,0.18), rgba(255,255,255,0.03));
   border-color: rgba(16,185,129,0.22);
 }
-
-/* Meta line under assistant messages */
 .meta {
-  margin-top: 8px;
+  margin-top: 6px;
   opacity: 0.72;
   font-size: 12px;
 }
 
-/* Sources cards */
-.source-card {
-  border: 1px solid rgba(255,255,255,0.10);
-  border-radius: 14px;
-  padding: 10px 12px;
-  background: rgba(255,255,255,0.03);
-  margin: 8px 0;
+/* Minimal sources */
+.sources-line {
+  margin-top: 8px;
+  font-size: 12px;
+  opacity: 0.78;
 }
-.source-card .idx { font-weight: 700; margin-right: 6px; }
-.source-card .txt { opacity: 0.88; font-size: 13px; }
+.sources-line code {
+  font-size: 12px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.03);
+  margin-right: 6px;
+  display: inline-block;
+  margin-top: 6px;
+}
 
-/* Sidebar button polish */
-.stButton>button { border-radius: 14px; padding: 0.55rem 0.95rem; }
+/* Right panel */
+.panel {
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 18px;
+  padding: 14px 14px 10px 14px;
+  background: rgba(255,255,255,0.03);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.14);
+  position: sticky;
+  top: 14px;
+}
+.panel-title { font-weight: 700; font-size: 14px; margin-bottom: 10px; opacity: 0.9; }
+
+/* Fixed composer */
+.rag-composer {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 9999;
+  padding: 14px 0 16px 0;
+  background: linear-gradient(180deg, rgba(0,0,0,0), rgba(0,0,0,0.35), rgba(0,0,0,0.55));
+  backdrop-filter: blur(10px);
+}
+.rag-composer-inner { max-width: 1250px; margin: 0 auto; padding: 0 1rem; }
+.rag-composer-card {
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 18px;
+  background: rgba(15,15,18,0.55);
+  box-shadow: 0 12px 30px rgba(0,0,0,0.22);
+  padding: 10px;
+}
 </style>
 """,
     unsafe_allow_html=True,
 )
 
 
-# -----------------------------
-# Helpers
-# -----------------------------
-def _extract_sources_from_answer(answer_text: str) -> List[str]:
+def now_hhmm() -> str:
+    return datetime.now().strftime("%H:%M")
+
+
+def extract_sources(answer_text: str) -> List[str]:
     marker = "\nSources:\n"
     if not answer_text or marker not in answer_text:
         return []
@@ -117,155 +159,170 @@ def _extract_sources_from_answer(answer_text: str) -> List[str]:
     return cleaned
 
 
-def _answer_without_sources(answer_text: str) -> str:
+def answer_without_sources(answer_text: str) -> str:
     marker = "\nSources:\n"
     if not answer_text:
         return ""
     return answer_text.split(marker, 1)[0].strip() if marker in answer_text else answer_text.strip()
 
-
-def _init_state() -> None:
-    if "messages" not in st.session_state:
-        # Each message:
-        # { role: "user"/"assistant", content: str, sources?: List[str], meta?: str, debug?: List[dict] }
-        st.session_state["messages"] = [
-            {
-                "role": "assistant",
-                "content": "Ask me anything about your banking PDFs. I’ll answer using retrieved passages and attach citations.",
-                "sources": [],
-                "meta": "",
-                "debug": [],
-            }
-        ]
+def normalize_query(q: str) -> str:
+    q = (q or "").strip()
+    # short inputs like "CET1" or "Basel III" often retrieve poorly
+    if len(q.split()) <= 3:
+        return f"Explain {q} in the context of banking regulation and capital requirements."
+    return q
 
 
-def _render_message(msg: Dict[str, Any], show_sources: bool, show_debug: bool) -> None:
+_SMALLTALK = re.compile(
+    r"^\s*(hi|hello|hey|yo|sup|thanks|thank you|thx|good morning|good afternoon|good evening|how are you|who are you)\s*[!.?]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def is_smalltalk(text: str) -> bool:
+    return bool(_SMALLTALK.match(text or ""))
+
+
+def smalltalk_reply(text: str) -> str:
+    t = (text or "").strip().lower()
+    if "who are you" in t:
+        return "I’m your RAG assistant — I answer questions using your uploaded banking PDFs and cite the exact places I used."
+    if "how are you" in t:
+        return "Doing good 😄 Send me a question about your PDFs and I’ll pull the relevant parts."
+    if "thank" in t or "thx" in t:
+        return "Anytime. Want to test something harder from the documents?"
+    return "Hey! 👋 Ask me anything about your banking PDFs (Basel III, CET1, RWAs, buffers, etc.)."
+
+
+def render_message(msg: Dict[str, Any]) -> None:
     role = msg.get("role", "")
     content = msg.get("content", "") or ""
-    sources: List[str] = msg.get("sources") or []
-    meta: str = msg.get("meta", "") or ""
-    debug_items: List[Dict[str, Any]] = msg.get("debug") or []
+    ts = msg.get("ts", "")
+    sources: List[str] = msg.get("sources", []) or ""
 
     if role == "user":
         st.markdown(
-            f"<div class='msg-row msg-right'><div class='bubble bubble-user'>{content}</div></div>",
+            f"<div class='msg-row msg-right'><div class='bubble bubble-user'>{content}</div></div>"
+            f"<div class='msg-row msg-right'><div class='meta'>{ts}</div></div>",
             unsafe_allow_html=True,
         )
-        return
-
-    # assistant
-    st.markdown(
-        f"<div class='msg-row msg-left'><div class='bubble bubble-assistant'>{content}</div></div>",
-        unsafe_allow_html=True,
-    )
-
-    if meta:
-        st.markdown(f"<div class='msg-row msg-left'><div class='meta'>{meta}</div></div>", unsafe_allow_html=True)
-
-    if show_sources and sources and content.strip() != "Not found in the provided documents.":
-        with st.expander("Sources", expanded=False):
-            for i, s in enumerate(sources, start=1):
-                st.markdown(
-                    f"<div class='source-card'><span class='idx'>{i}.</span><span class='txt'>{s}</span></div>",
-                    unsafe_allow_html=True,
-                )
-
-    if show_debug:
-        with st.expander("Debug: Retrieved chunks", expanded=False):
-            if not debug_items:
-                st.caption("No debug info stored for this message.")
-            for i, item in enumerate(debug_items, start=1):
-                st.markdown(f"**{i}. {item.get('citation','')}**")
-                st.caption(f"Score: {item.get('score')}")
-                st.write(item.get("preview", ""))
-                st.divider()
+    else:
+        st.markdown(
+            f"<div class='msg-row msg-left'><div class='bubble bubble-assistant'>{content}</div></div>"
+            f"<div class='msg-row msg-left'><div class='meta'>{ts}</div></div>",
+            unsafe_allow_html=True,
+        )
+        if sources:
+            st.markdown(
+                "<div class='msg-row msg-left'><div class='sources-line'>Sources: "
+                + "".join([f"<code>{s}</code>" for s in sources[:4]])
+                + "</div></div>",
+                unsafe_allow_html=True,
+            )
 
 
-# -----------------------------
-# Sidebar (clean + stable)
-# -----------------------------
+# ---- State init
+if "messages" not in st.session_state:
+    st.session_state["messages"] = [
+        {"role": "assistant", "content": "Hey — ask me anything about your banking PDFs.", "ts": now_hhmm(), "sources": []}
+    ]
+st.session_state.setdefault("last_sources", [])
+st.session_state.setdefault("pending_prompt", None)
+
+
+# ---- Sidebar
 with st.sidebar:
     st.header("Controls")
-    show_sources_panel = st.toggle("Show sources", value=True)
-    show_debug = st.toggle("Debug mode", value=False)
-
-    st.write("")
+    st.toggle("Show sources panel", key="show_sources_panel", value=True)
     if st.button("Clear chat"):
-        st.session_state.pop("messages", None)
-        _init_state()
+        st.session_state.clear()
         st.rerun()
-
-    st.divider()
-    st.caption("Answers are grounded in your PDFs. If it’s not in the documents, it will say so.")
+    st.caption("Knowledge questions use your PDFs + citations. Small talk works too.")
 
 
-# -----------------------------
-# Header
-# -----------------------------
+# ---- Header
 st.markdown(
     """
 <div class="rag-shell">
   <div class="rag-title">RAG Chatbot</div>
-  <div class="rag-subtitle">
-    Retrieval-augmented answers grounded in your banking PDFs, with deterministic citations.
-  </div>
-  <hr class="rag-divider" />
-  <div class="rag-subtitle">
-    Try: <i>“What are risk-weighted assets (RWAs) and why are they important?”</i>
+  <div class="rag-subtitle">Grounded answers from your banking PDFs, plus normal conversation.</div>
+  <div style="margin-top:10px;">
+    <span class="pill">Chat</span>
+    <span class="pill">RAG</span>
+    <span class="pill">Citations</span>
   </div>
 </div>
 """,
     unsafe_allow_html=True,
 )
-
 st.write("")
 
+left, right = st.columns([2.2, 1.0], gap="large")
 
-# -----------------------------
-# State + render history
-# -----------------------------
-_init_state()
+with left:
+    for m in st.session_state["messages"]:
+        render_message(m)
 
-st.markdown("<div class='rag-chat'></div>", unsafe_allow_html=True)
-for m in st.session_state["messages"]:
-    _render_message(m, show_sources_panel, show_debug)
+with right:
+    st.markdown("<div class='panel'>", unsafe_allow_html=True)
+    st.markdown("<div class='panel-title'>Sources</div>", unsafe_allow_html=True)
+    if st.session_state.get("show_sources_panel", True):
+        srcs = st.session_state.get("last_sources", [])
+        if not srcs:
+            st.caption("Sources will appear here after a document-based question.")
+        else:
+            st.markdown("<div class='sources-line'>", unsafe_allow_html=True)
+            st.markdown("".join([f"<code>{s}</code>" for s in srcs[:6]]), unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+    else:
+        st.caption("Hidden.")
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
-# -----------------------------
-# Input
-# -----------------------------
-prompt = st.chat_input("Ask a question…")
+# ---- Fixed composer (bottom)
+st.markdown("<div class='rag-composer'><div class='rag-composer-inner'><div class='rag-composer-card'>", unsafe_allow_html=True)
 
-if prompt:
-    # Store user message
-    st.session_state["messages"].append({"role": "user", "content": prompt})
+with st.form("composer", clear_on_submit=True):
+    prompt = st.text_input("Message", label_visibility="collapsed", placeholder="Ask a question…")
+    send = st.form_submit_button("Send")
 
-    # Call RAG
-    with st.spinner("Thinking…"):
-        t0 = time.time()
-        # keep stable internal settings (simple and clean)
-        out: Dict[str, Any] = answer_question(prompt, k=4, llm_model="llama3.2:3b")
-        dt = time.time() - t0
+st.markdown("</div></div></div>", unsafe_allow_html=True)
 
-    answer_full = out.get("answer", "") or ""
-    answer_only = _answer_without_sources(answer_full)
-    sources = _extract_sources_from_answer(answer_full)
-
-    meta = f"Response time: {dt:.2f}s · Model: llama3.2:3b · Top-K: 4"
-    debug_items = out.get("retrieved", []) or []
-
-    # Store assistant message WITH sources + debug, so toggles never “lose” anything
-    st.session_state["messages"].append(
-        {
-            "role": "assistant",
-            "content": answer_only,
-            "sources": sources,
-            "meta": meta,
-            "debug": debug_items,
-        }
-    )
-
+# ---- Two-step submit: show user immediately, answer on next run
+if send and prompt.strip():
+    st.session_state["messages"].append({"role": "user", "content": prompt, "ts": now_hhmm()})
+    st.session_state["pending_prompt"] = prompt
     st.rerun()
 
+pending: Optional[str] = st.session_state.get("pending_prompt")
+if pending:
+    # clear pending first so we don't double-run on reruns
+    st.session_state["pending_prompt"] = None
+
+    # small talk path (no retrieval, no sources)
+    if is_smalltalk(pending):
+        st.session_state["last_sources"] = []
+        st.session_state["messages"].append(
+            {"role": "assistant", "content": smalltalk_reply(pending), "ts": now_hhmm(), "sources": []}
+        )
+        st.rerun()
+
+    # RAG path
+    with st.spinner("Thinking…"):
+        query = normalize_query(pending)
+        out: Dict[str, Any] = answer_question(query, k=4, llm_model="llama3.2:3b")
+
+
+    full = out.get("answer", "") or ""
+    content = answer_without_sources(full)
+    sources = extract_sources(full)
+    if content.strip() == "Not found in the provided documents.":
+        sources = []
+
+
+    st.session_state["last_sources"] = sources
+    st.session_state["messages"].append({"role": "assistant", "content": content, "ts": now_hhmm(), "sources": sources})
+
+    st.rerun()
 
 st.caption("Project #4 • Ollama + Chroma • Grounded answers with citations")

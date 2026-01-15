@@ -129,7 +129,7 @@ def answer_question(
 
     llm = ChatOllama(
         model=llm_name,
-        temperature=_get_env_float("RAG_TEMPERATURE", 0.0),
+        temperature=_get_env_float("RAG_TEMPERATURE", 0.2),
     )
 
     prompt = ChatPromptTemplate.from_messages(
@@ -137,16 +137,26 @@ def answer_question(
             (
                 "system",
                 (
-                    "You are a RAG assistant. Answer the user's question using ONLY the provided context.\n"
-                    "Rules:\n"
-                    "1) If the answer is not explicitly supported by the context, say exactly: "
+                    "You are a Retrieval-Augmented Generation (RAG) assistant.\n"
+                    "You MUST answer using ONLY the provided context.\n\n"
+
+                    "STRICT RULES (DO NOT BREAK):\n"
+                    "1) If the answer is not explicitly supported by the context, say EXACTLY:\n"
                     "\"Not found in the provided documents.\"\n"
-                    "2) Do NOT use outside knowledge.\n"
-                    "3) Keep the answer concise and factual.\n"
-                    "4) Do NOT mention sources, citations, or [Source X] in your answer.\n"
-                    "5) Write ONLY the answer text.\n"
+                    "2) DO NOT use outside knowledge.\n"
+                    "3) DO NOT explain from general training data.\n"
+                    "4) DO NOT speculate or add background information.\n"
+                    "5) If the user input is vague (e.g., 'Basel III'), ask ONE clarifying question instead.\n"
+                    "6) DO NOT write citations. The application adds citations.\n\n"
+
+                    "STYLE:\n"
+                    "- Be natural and conversational, but precise.\n"
+                    "- Use short paragraphs.\n"
+                    "- If the user asks a follow-up like 'why?' or 'what about that?', restate the subject briefly.\n"
                 ),
             ),
+
+
 
             (
                 "human",
