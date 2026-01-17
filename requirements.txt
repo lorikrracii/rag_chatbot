@@ -6,4 +6,5 @@ chromadb
 pypdf
 langchain-ollama
 langchain-chroma
+langchain-google-genai
 cryptography

@@ -1,3 +1,4 @@
+# rag/retriever.py
 from __future__ import annotations
 
 import os
@@ -11,13 +12,12 @@ from langchain_chroma import Chroma
 
 @dataclass(frozen=True)
 class RetrievalResult:
-    """One retrieved chunk + its similarity score (lower/higher depends on backend; treat as 'for ranking')."""
+    """One retrieved chunk + its similarity score (Chroma: lower distance is better)."""
     doc: Document
     score: float
 
 
 def _get_env_int(name: str, default: int) -> int:
-    """Read an int env var safely."""
     raw = os.getenv(name)
     if raw is None or raw.strip() == "":
         return default
@@ -32,10 +32,6 @@ def get_vectorstore(
     collection_name: str = "rag_docs",
     embed_model: str = "nomic-embed-text",
 ) -> Chroma:
-    """
-    Loads the existing Chroma DB from disk and returns a ready-to-query vectorstore.
-    IMPORTANT: embed_model must match ingestion.
-    """
     if not os.path.isdir(persist_directory):
         raise FileNotFoundError(
             f"Chroma persist directory not found: '{persist_directory}'. "
@@ -44,13 +40,28 @@ def get_vectorstore(
 
     embeddings = OllamaEmbeddings(model=embed_model)
 
-    # This does NOT re-ingest. It just opens the persisted collection.
-    vs = Chroma(
+    return Chroma(
         collection_name=collection_name,
         persist_directory=persist_directory,
         embedding_function=embeddings,
     )
-    return vs
+
+
+def _match_filename(source_value: str, wanted_filename: str) -> bool:
+    """
+    True if source_value (stored path) points to wanted_filename, regardless of / or \\.
+    """
+    if not source_value or not wanted_filename:
+        return False
+    src = str(source_value).replace("\\", "/").lower().strip()
+    wanted = wanted_filename.replace("\\", "/").lower().strip()
+
+    # exact basename match
+    if os.path.basename(src) == wanted:
+        return True
+
+    # handle cases where src is full path and wanted is filename
+    return src.endswith("/" + wanted)
 
 
 def retrieve(
@@ -63,7 +74,8 @@ def retrieve(
     embed_model: str = "nomic-embed-text",
 ) -> List[RetrievalResult]:
     """
-    Runs Top-K similarity search and returns documents + scores.
+    Top-K similarity search. If source_filename is provided (and != "All"),
+    only keep results from that PDF (by filename match against metadata['source']).
     """
     if not query or not query.strip():
         return []
@@ -76,50 +88,47 @@ def retrieve(
         embed_model=embed_model,
     )
 
-    # Returns: List[Tuple[Document, float]]
-    prefetch_k = max(top_k * 3, top_k)  # fetch more so filtering still leaves enough
+    # Pull more candidates so post-filtering still leaves enough.
+    want_filter = bool(source_filename and source_filename.strip() and source_filename.strip().lower() != "all")
+    prefetch_k = max(top_k * 8, 50) if want_filter else max(top_k * 4, top_k)
+
     docs_and_scores: List[Tuple[Document, float]] = vs.similarity_search_with_score(
         query=query,
         k=prefetch_k,
-    )
+    ) or []
 
-    # Optional post-filter by filename (simple + robust)
-    if source_filename and source_filename.strip().lower() != "all":
-        wanted = source_filename.strip().lower()
-        filtered: List[Tuple[Document, float]] = []
-        for doc, score in docs_and_scores:
-            src = str((doc.metadata or {}).get("source", "")).lower()
-            if wanted in os.path.basename(src):
-                filtered.append((doc, score))
-        docs_and_scores = filtered
+    if want_filter:
+        wanted = source_filename.strip()
+        docs_and_scores = [
+            (doc, score)
+            for (doc, score) in docs_and_scores
+            if doc is not None
+            and _match_filename((doc.metadata or {}).get("source", ""), wanted)
+        ]
 
-    # finally cut to top_k
-    docs_and_scores = docs_and_scores[:top_k]
+    # Dedupe by (source, page, chunk_id)
+    seen = set()
+    deduped: List[Tuple[Document, float]] = []
+    for doc, score in docs_and_scores:
+        md = doc.metadata or {}
+        key = (md.get("source"), md.get("page"), md.get("chunk_id"))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append((doc, score))
+        if len(deduped) >= top_k:
+            break
 
-
-    results: List[RetrievalResult] = [
-        RetrievalResult(doc=doc, score=float(score)) for doc, score in docs_and_scores
-    ]
-    return results
+    return [RetrievalResult(doc=d, score=float(s)) for d, s in deduped]
 
 
 def format_citation(doc: Document) -> str:
-    """
-    Builds a simple citation string from metadata you stored during ingestion.
-    Expected metadata keys (best-case): source, page, chunk_id
-    """
     md = doc.metadata or {}
     source = md.get("source", "unknown_source")
     page = md.get("page")
-    chunk_id = md.get("chunk_id")
+    filename = os.path.basename(str(source).replace("\\", "/"))
 
-    # Make the filename nicer if it's a path
-    filename = os.path.basename(str(source))
-
-    parts = [filename]
+    # PyPDFLoader page is 0-indexed; display 1-indexed.
     if page is not None:
-        parts.append(f"p.{page}")
-    if chunk_id is not None:
-        parts.append(f"chunk:{chunk_id}")
-
-    return " — ".join(parts)
+        return f"{filename} — p.{int(page) + 1}"
+    return f"{filename}"
