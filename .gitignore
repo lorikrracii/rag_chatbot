@@ -216,7 +216,7 @@ __marimo__/
 .streamlit/secrets.toml
 
 # Vector databases / RAG artifacts
-chromadb/
+# chromadb/
 faiss_index/
 vectorstore/
 

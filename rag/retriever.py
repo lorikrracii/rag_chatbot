@@ -1,13 +1,15 @@
-# rag/retriever.py
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import List, Tuple, Optional
+from typing import List, Optional, Tuple
 
-from langchain_core.documents import Document
-from langchain_ollama import OllamaEmbeddings
+from dotenv import load_dotenv
 from langchain_chroma import Chroma
+from langchain_core.documents import Document
+from langchain_openai import OpenAIEmbeddings
+
+load_dotenv(override=True)
 
 
 @dataclass(frozen=True)
@@ -30,15 +32,16 @@ def _get_env_int(name: str, default: int) -> int:
 def get_vectorstore(
     persist_directory: str = "chromadb",
     collection_name: str = "rag_docs",
-    embed_model: str = "nomic-embed-text",
+    *,
+    embed_model: Optional[str] = None,
 ) -> Chroma:
     if not os.path.isdir(persist_directory):
         raise FileNotFoundError(
-            f"Chroma persist directory not found: '{persist_directory}'. "
-            f"Did you run ingestion and create it?"
+            f"Chroma persist directory not found: '{persist_directory}'. Did you run ingestion?"
         )
 
-    embeddings = OllamaEmbeddings(model=embed_model)
+    model_name = (embed_model or os.getenv("RAG_EMBED_MODEL", "text-embedding-3-small")).strip()
+    embeddings = OpenAIEmbeddings(model=model_name)
 
     return Chroma(
         collection_name=collection_name,
@@ -48,19 +51,12 @@ def get_vectorstore(
 
 
 def _match_filename(source_value: str, wanted_filename: str) -> bool:
-    """
-    True if source_value (stored path) points to wanted_filename, regardless of / or \\.
-    """
     if not source_value or not wanted_filename:
         return False
     src = str(source_value).replace("\\", "/").lower().strip()
     wanted = wanted_filename.replace("\\", "/").lower().strip()
-
-    # exact basename match
     if os.path.basename(src) == wanted:
         return True
-
-    # handle cases where src is full path and wanted is filename
     return src.endswith("/" + wanted)
 
 
@@ -71,16 +67,12 @@ def retrieve(
     source_filename: Optional[str] = None,
     persist_directory: str = "chromadb",
     collection_name: str = "rag_docs",
-    embed_model: str = "nomic-embed-text",
+    embed_model: Optional[str] = None,
 ) -> List[RetrievalResult]:
-    """
-    Top-K similarity search. If source_filename is provided (and != "All"),
-    only keep results from that PDF (by filename match against metadata['source']).
-    """
     if not query or not query.strip():
         return []
 
-    top_k = k if isinstance(k, int) and k > 0 else _get_env_int("RAG_TOP_K", 4)
+    top_k = k if isinstance(k, int) and k > 0 else _get_env_int("RAG_TOP_K", 12)
 
     vs = get_vectorstore(
         persist_directory=persist_directory,
@@ -88,25 +80,19 @@ def retrieve(
         embed_model=embed_model,
     )
 
-    # Pull more candidates so post-filtering still leaves enough.
     want_filter = bool(source_filename and source_filename.strip() and source_filename.strip().lower() != "all")
     prefetch_k = max(top_k * 8, 50) if want_filter else max(top_k * 4, top_k)
 
-    docs_and_scores: List[Tuple[Document, float]] = vs.similarity_search_with_score(
-        query=query,
-        k=prefetch_k,
-    ) or []
+    docs_and_scores: List[Tuple[Document, float]] = vs.similarity_search_with_score(query=query, k=prefetch_k) or []
 
     if want_filter:
         wanted = source_filename.strip()
         docs_and_scores = [
             (doc, score)
             for (doc, score) in docs_and_scores
-            if doc is not None
-            and _match_filename((doc.metadata or {}).get("source", ""), wanted)
+            if doc is not None and _match_filename((doc.metadata or {}).get("source", ""), wanted)
         ]
 
-    # Dedupe by (source, page, chunk_id)
     seen = set()
     deduped: List[Tuple[Document, float]] = []
     for doc, score in docs_and_scores:
@@ -128,7 +114,6 @@ def format_citation(doc: Document) -> str:
     page = md.get("page")
     filename = os.path.basename(str(source).replace("\\", "/"))
 
-    # PyPDFLoader page is 0-indexed; display 1-indexed.
     if page is not None:
         return f"{filename} — p.{int(page) + 1}"
     return f"{filename}"
