@@ -1,34 +1,15 @@
-# =============================
-# Application & Environment
-# =============================
-streamlit>=1.33.0
+streamlit>=1.31.0
 python-dotenv>=1.0.1
 
-# =============================
-# LangChain Core
-# =============================
 langchain>=0.2.10
 langchain-core>=0.2.10
 langchain-community>=0.2.10
-langchain-openai>=0.1.8
 
-# =============================
-# OpenAI SDK
-# =============================
+langchain-openai>=0.1.22
 openai>=1.30.0
 tiktoken>=0.7.0
 
-# =============================
-# Vector Store (Chroma)
-# =============================
-chromadb>=0.5.3
+chromadb>=0.5.5
+langchain-chroma>=0.1.2
 
-# =============================
-# Document Loaders
-# =============================
-pypdf>=4.2.0
-
-# =============================
-# Security / Crypto (safe to keep)
-# =============================
-cryptography>=42.0.5
+pypdf>=4.3.1
