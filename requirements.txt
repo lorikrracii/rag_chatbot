@@ -8,3 +8,14 @@ langchain-ollama
 langchain-chroma
 langchain-google-genai
 cryptography
+transformers
+torch
+sentence-transformers
+accelerate
+langchain
+langchain-core
+langchain-chroma
+chromadb
+pypdf
+python-dotenv
+streamlit
