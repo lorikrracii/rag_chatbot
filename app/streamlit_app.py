@@ -2,6 +2,11 @@ from __future__ import annotations
 
 import html
 import os
+
+if os.getenv("RUN_INGEST_ON_START") == "true":
+    from rag.ingest import ingest
+    ingest()
+
 import re
 import sys
 import traceback
@@ -212,6 +217,37 @@ def _llm_info_from_env() -> Dict[str, str]:
 def _embed_info_from_env() -> Dict[str, str]:
     return {"backend": "openai", "model": os.getenv("RAG_EMBED_MODEL", "text-embedding-3-small")}
 
+# --- Auto-ingest on Streamlit Cloud (first run) ---
+def ensure_chroma_exists() -> None:
+    chroma_dir = os.getenv("CHROMA_DIR", "chromadb")
+    collection = os.getenv("CHROMA_COLLECTION", "rag_docs")
+
+    # If DB folder exists and has content, do nothing
+    if Path(chroma_dir).exists() and any(Path(chroma_dir).iterdir()):
+        return
+
+    # If no PDFs, can't ingest
+    data_dir = os.getenv("DATA_DIR", "data/raw")
+    pdfs = list(Path(data_dir).rglob("*.pdf")) if Path(data_dir).exists() else []
+    if not pdfs:
+        raise FileNotFoundError(
+            f"No PDFs found in {data_dir}. Add your PDFs to the repo under data/raw/."
+        )
+
+    from rag.ingest import ingest, IngestConfig
+
+    cfg = IngestConfig()
+    cfg.chroma_dir = chroma_dir
+    cfg.collection_name = collection
+    cfg.reset_chroma = True  # safe on first run
+
+    with st.spinner("📦 First run: building the vector database (one-time)…"):
+        ingest(cfg)
+
+# Run once per session
+if "BOOTSTRAPPED" not in st.session_state:
+    ensure_chroma_exists()
+    st.session_state["BOOTSTRAPPED"] = True
 
 
 def health_check() -> Dict[str, Any]:
