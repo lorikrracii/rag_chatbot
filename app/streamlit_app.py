@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import html
-import textwrap
-
 import os
 import re
 import sys
+import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -153,11 +152,11 @@ section[data-testid="stSidebar"] * {
 
 .time-stamp {
     font-size: 10px;
-    color: #94a3b8; /* Explicit light grey */
-    opacity: 0.8;    /* Increased from 0.5 */
+    color: #94a3b8;
+    opacity: 0.8;
     margin-top: 8px;
     text-align: right;
-    display: block;  /* Ensures it stays on its own line */
+    display: block;
     width: 100%;
 }
 
@@ -193,7 +192,7 @@ section[data-testid="stSidebar"] * {
 )
 
 
-# ---------------- Helpers (same logic) ----------------
+# ---------------- Helpers ----------------
 def now_hhmm() -> str:
     return datetime.now().strftime("%H:%M")
 
@@ -206,29 +205,43 @@ def list_pdf_filenames() -> List[str]:
     return sorted({p.name for p in base.rglob("*.pdf")})
 
 
+def _llm_info_from_env() -> Dict[str, str]:
+    return {"backend": "openai", "model": os.getenv("RAG_LLM_MODEL", "gpt-4o-mini")}
+
+
+def _embed_info_from_env() -> Dict[str, str]:
+    return {"backend": "openai", "model": os.getenv("RAG_EMBED_MODEL", "text-embedding-3-small")}
+
+
+
 def health_check() -> Dict[str, Any]:
     chroma_dir = os.getenv("CHROMA_DIR", "chromadb")
     collection = os.getenv("CHROMA_COLLECTION", "rag_docs")
-    embed_model = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
-    llm_model = os.getenv("RAG_LLM_MODEL", "qwen2.5:7b-instruct")
+
+    llm = _llm_info_from_env()
+    emb = _embed_info_from_env()
 
     info: Dict[str, Any] = {
         "chroma_dir": chroma_dir,
         "collection": collection,
-        "embed_model": embed_model,
-        "llm_model": llm_model,
+        "embed_backend": emb["backend"],
+        "embed_model": emb["model"],
+        "llm_backend": llm["backend"],
+        "llm_model": llm["model"],
         "chroma_dir_exists": Path(chroma_dir).exists(),
         "vectorstore_ok": False,
         "vector_count": None,
+        "error": None,
     }
 
     try:
-        from rag.retriever import get_vectorstore  # local import
+        from rag.retriever import get_vectorstore
 
+        # ✅ OpenAI-only signature: get_vectorstore(..., embed_model=...)
         vs = get_vectorstore(
             persist_directory=chroma_dir,
             collection_name=collection,
-            embed_model=embed_model,
+            embed_model=emb["model"],
         )
 
         try:
@@ -239,9 +252,16 @@ def health_check() -> Dict[str, Any]:
         info["vectorstore_ok"] = True
     except Exception as e:
         info["vectorstore_ok"] = False
-        info["error"] = str(e)
+        info["error"] = f"{type(e).__name__}: {repr(e)}"
 
     return info
+
+def highlight_terms(text: str, query: str) -> str:
+    terms = sorted({t for t in re.findall(r"[A-Za-z0-9]{3,}", (query or "").lower())}, key=len, reverse=True)
+    safe = html.escape(text or "")
+    for t in terms[:12]:
+        safe = re.sub(rf"(?i)\b({re.escape(t)})\b", r"<mark>\1</mark>", safe)
+    return safe
 
 
 def extract_sources(answer_text: str) -> List[str]:
@@ -269,7 +289,7 @@ def answer_without_sources(answer_text: str) -> str:
 def normalize_query(q: str) -> str:
     q = (q or "").strip()
     if len(q.split()) <= 3:
-        return f"Explain {q} in the context of banking regulation and capital requirements."
+        return f"Explain {q} in the context of the uploaded documents."
     return q
 
 
@@ -294,7 +314,7 @@ def autoscroll_to_anchor() -> None:
     )
 
 
-# Guards (same behavior)
+# Guards
 _INJECTION = re.compile(
     r"(ignore (all|previous|prior) instructions|"
     r"reveal (the )?(system|developer) prompt|"
@@ -361,18 +381,18 @@ def is_casual_statement(text: str) -> bool:
 def smalltalk_reply(text: str) -> str:
     t = (text or "").strip().lower()
     if "who are you" in t:
-        return "I’m your RAG assistant — I answer questions using your uploaded banking PDFs and cite the exact places I used."
+        return "I’m your RAG assistant — I answer using only the uploaded documents and cite the exact places used."
     if "how are you" in t:
-        return "Doing good 😄 Send me a question about your PDFs and I’ll pull the relevant parts."
+        return "Doing good 😄 Ask me something from your documents and I’ll answer with sources."
     if "thank" in t or "thx" in t:
         return "Anytime. Want to test something harder from the documents?"
-    return "Hey! 👋 Ask me anything about your banking PDFs (Basel III, CET1, RWAs, buffers, etc.)."
+    return "Hey! 👋 Ask me anything about your uploaded documents."
 
 
 def injection_reply() -> str:
     return (
         "I can’t help with attempts to override instructions or reveal system prompts.\n\n"
-        "Ask a normal question about the PDFs (e.g., CET1, RWAs, capital buffers), and I’ll answer with citations."
+        "Ask a normal question about the PDFs and I’ll answer with citations."
     )
 
 
@@ -381,7 +401,7 @@ if "messages" not in st.session_state:
     st.session_state["messages"] = [
         {
             "role": "assistant",
-            "content": "Intelligence systems online. How can I assist with your regulatory documentation today?",
+            "content": "Systems online. Ask a question and I’ll answer using your documents with citations.",
             "ts": now_hhmm(),
             "sources": [],
         }
@@ -421,14 +441,21 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### 🖥️ System Details")
-    st.caption(f"**LLM:** `{os.getenv('RAG_LLM_MODEL', 'qwen2.5:7b-instruct')}`")
+
+    llm = _llm_info_from_env()
+    emb = _embed_info_from_env()
+    st.caption(f"**LLM backend:** `{llm['backend']}`")
+    st.caption(f"**LLM model:** `{llm['model']}`")
+    st.caption(f"**Embeddings:** `{emb['backend']}` / `{emb['model']}`")
     st.caption(f"**Collection:** `{os.getenv('CHROMA_COLLECTION', 'rag_docs')}`")
 
     with st.expander("System check", expanded=False):
         hc = health_check()
         st.write("Chroma dir:", f"`{hc['chroma_dir']}`")
         st.write("Collection:", f"`{hc['collection']}`")
-        st.write("Embed model:", f"`{hc['embed_model']}`")
+        st.write("Embeddings backend:", f"`{hc['embed_backend']}`")
+        st.write("Embeddings model:", f"`{hc['embed_model']}`")
+        st.write("LLM backend:", f"`{hc['llm_backend']}`")
         st.write("LLM model:", f"`{hc['llm_model']}`")
         st.write("DB folder exists:", "✅" if hc["chroma_dir_exists"] else "❌")
         if hc.get("vectorstore_ok"):
@@ -443,18 +470,19 @@ with st.sidebar:
 # ---------------- Main UI ----------------
 hc_top = health_check()
 db_ok = bool(hc_top.get("vectorstore_ok")) and bool(hc_top.get("chroma_dir_exists"))
+llm = _llm_info_from_env()
 
 st.markdown(
     f"""
 <div class="hero-section">
-    <div class="hero-title">RAG Intelligence Center</div>
+    <div class="hero-title">RAG Knowledge Navigator</div>
     <div style="color: var(--text-muted); font-size: 15px; margin-bottom: 20px;">
-        Advanced semantic search and synthesis for banking regulations and capital requirements.
+        Grounded answers from your PDF knowledge base — with citations and safety guards.
     </div>
     <div style="display: flex; gap: 12px; flex-wrap: wrap;">
         <span class="status-badge">📡 Vector Store {"Connected" if db_ok else "Check"}</span>
-        <span class="status-badge">🧠 LLM: {os.getenv("RAG_LLM_MODEL", "qwen2.5:7b-instruct")}</span>
-        <span class="status-badge">📄 Docs: {"All" if doc_choice == "All" else doc_choice}</span>
+        <span class="status-badge">🧠 LLM: {html.escape(llm["backend"])} / {html.escape(llm["model"])}</span>
+        <span class="status-badge">📄 Docs: {"All" if doc_choice == "All" else html.escape(doc_choice)}</span>
         <span class="status-badge">🔒 Strict: {"On" if strict_mode else "Off"}</span>
     </div>
 </div>
@@ -467,34 +495,31 @@ for msg in st.session_state["messages"]:
     is_user = msg.get("role") == "user"
     row_class = "msg-right" if is_user else "msg-left"
     bubble_class = "bubble-user" if is_user else "bubble-assistant"
+
     avatar = "🧑‍💻" if is_user else "🤖"
 
-    # 1. Clean content and timestamp
-    content = msg.get("content", "").replace("\n", "<br>")
+    content = (msg.get("content", "") or "").replace("\n", "<br>")
     ts = msg.get("ts", "")
     sources = msg.get("sources", []) or []
-    
-    # 2. Build sources
+
     sources_html = ""
     if sources:
-        chips = "".join([f'<span class="source-pill">{s}</span>' for s in sources[:6]])
+        chips = "".join([f'<span class="source-pill">{html.escape(s)}</span>' for s in sources[:6]])
         sources_html = f'<div style="margin-top:6px;">{chips}</div>'
 
-    # 3. CONSTRUCT AS A SINGLE LINE TO PREVENT MARKDOWN PARSING ERRORS
-    # This ensures the browser handles the <div> tags, not the Streamlit markdown engine.
     html_string = (
         f'<div class="msg-row {row_class}">'
         f'<div class="avatar">{avatar}</div>'
         f'<div class="bubble {bubble_class}">'
         f'<div>{content}</div>{sources_html}'
-        f'<div style="font-size: 10px; color: #94a3b8; margin-top: 10px; text-align: right; width: 100%; display: block;">{ts}</div>'
-        f'</div></div>'
+        f'<div class="time-stamp">{html.escape(ts)}</div>'
+        f"</div></div>"
     )
-    
+
     st.markdown(html_string, unsafe_allow_html=True)
 
-# Anchor for autoscroll
 st.markdown("<div id='chat-bottom'></div>", unsafe_allow_html=True)
+autoscroll_to_anchor()
 
 
 # ---------------- Fixed composer ----------------
@@ -504,7 +529,7 @@ with st.form("chat_form", clear_on_submit=True):
     cols = st.columns([9, 1])
     user_input = cols[0].text_input(
         "Ask anything",
-        placeholder="Ask a question about your documents…",
+        placeholder="Ask a question about your PDFs…",
         label_visibility="collapsed",
         disabled=st.session_state.get("is_processing", False),
     )
@@ -513,7 +538,7 @@ with st.form("chat_form", clear_on_submit=True):
 st.markdown("</div>", unsafe_allow_html=True)
 
 
-# ---------------- Two-step submit (same logic) ----------------
+# ---------------- Two-step submit ----------------
 if submitted and user_input.strip():
     st.session_state["messages"].append(
         {"role": "user", "content": user_input, "ts": now_hhmm(), "sources": []}
@@ -528,7 +553,6 @@ if pending:
     st.session_state["pending_prompt"] = None
     st.session_state["is_processing"] = True
 
-    # Smalltalk guard
     if is_smalltalk(pending):
         st.session_state["is_processing"] = False
         st.session_state["last_sources"] = []
@@ -537,7 +561,6 @@ if pending:
         )
         st.rerun()
 
-    # Injection guard
     if is_injection(pending):
         st.session_state["is_processing"] = False
         st.session_state["last_sources"] = []
@@ -546,7 +569,6 @@ if pending:
         )
         st.rerun()
 
-    # Garbage input guard
     if is_garbage_input(pending):
         st.session_state["is_processing"] = False
         st.session_state["last_sources"] = []
@@ -555,21 +577,19 @@ if pending:
         )
         st.rerun()
 
-    # Casual statement guard
     if is_casual_statement(pending):
         st.session_state["is_processing"] = False
         st.session_state["last_sources"] = []
         st.session_state["messages"].append(
             {
                 "role": "assistant",
-                "content": "Nice to meet you! 👋 I'm here to answer questions about your banking PDFs (Basel III, CET1, RWAs, capital buffers, etc.). What would you like to know?",
+                "content": "Nice to meet you! 👋 Ask me a question about your uploaded PDFs and I’ll answer with sources.",
                 "ts": now_hhmm(),
                 "sources": [],
             }
         )
         st.rerun()
 
-    # RAG path with error handling
     try:
         with st.spinner("Synthesizing response..."):
             memory = build_memory_hint(st.session_state["messages"], max_user_turns=2)
@@ -602,17 +622,21 @@ if pending:
     except Exception as e:
         st.session_state["is_processing"] = False
         st.session_state["last_sources"] = []
+        tb = traceback.format_exc()
+
         error_msg = (
-            "I encountered an error while processing your question. Please try rephrasing it or ask about banking regulations "
-            "(CET1, RWAs, capital buffers, etc.).\n\n"
-            f"Error: {str(e)}"
+            "I encountered an error while processing your question.\n\n"
+            f"Type: {type(e).__name__}\n"
+            f"Repr: {repr(e)}\n\n"
+            f"Traceback:\n{tb}"
         )
+
         st.session_state["messages"].append(
             {"role": "assistant", "content": error_msg, "ts": now_hhmm(), "sources": []}
         )
         st.rerun()
 
 st.markdown(
-    "<br><p style='text-align:center; color:gray; font-size:12px;'>Project #4 • Ollama + Chroma • Grounded answers with citations</p>",
+    "<br><p style='text-align:center; color:gray; font-size:12px;'>Project #4 • RAG • Grounded answers with citations</p>",
     unsafe_allow_html=True,
 )
