@@ -2,11 +2,6 @@ from __future__ import annotations
 
 import html
 import os
-
-if os.getenv("RUN_INGEST_ON_START") == "true":
-    from rag.ingest import ingest
-    ingest()
-
 import re
 import sys
 import traceback
