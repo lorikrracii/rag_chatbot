@@ -221,5 +221,5 @@ faiss_index/
 vectorstore/
 
 # Local datasets
-data/raw/
-data/processed/
+!data/raw/
+!data/processed/
