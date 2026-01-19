@@ -28,8 +28,8 @@ from rag.answer import answer_question  # noqa: E402
 
 # ---------------- Page config ----------------
 st.set_page_config(
-    page_title="RAG Intelligence Center",
-    page_icon="⚖️",
+    page_title="RAG Knowledge Navigator",
+    page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -467,7 +467,7 @@ for msg in st.session_state["messages"]:
     is_user = msg.get("role") == "user"
     row_class = "msg-right" if is_user else "msg-left"
     bubble_class = "bubble-user" if is_user else "bubble-assistant"
-    avatar = "🧑‍💻" if is_user else "⚖️"
+    avatar = "🧑‍💻" if is_user else "🤖"
 
     # 1. Clean content and timestamp
     content = msg.get("content", "").replace("\n", "<br>")
@@ -503,8 +503,8 @@ st.markdown('<div class="fixed-composer">', unsafe_allow_html=True)
 with st.form("chat_form", clear_on_submit=True):
     cols = st.columns([9, 1])
     user_input = cols[0].text_input(
-        "Message",
-        placeholder="Query Basel III, CET1 ratios, buffers, RWAs…",
+        "Ask anything",
+        placeholder="Ask a question about your documents…",
         label_visibility="collapsed",
         disabled=st.session_state.get("is_processing", False),
     )
