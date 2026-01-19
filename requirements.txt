@@ -8,3 +8,15 @@ langchain-ollama
 langchain-chroma
 langchain-google-genai
 cryptography
+streamlit
+python-dotenv
+
+langchain>=0.2.10
+langchain-community
+langchain-openai
+
+openai>=1.30.0
+
+chromadb
+pypdf
+tiktoken
