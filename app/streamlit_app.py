@@ -473,7 +473,7 @@ if "messages" not in st.session_state:
     st.session_state["messages"] = [
         {
             "role": "assistant",
-            "content": "Systems online. Ask a question and I’ll answer using your documents with citations.",
+            "content": "Welcome to the RAG Knowledge Navigator. The system is initialized and synchronized with the regulatory framework. Please submit your inquiry to begin a grounded analysis supported by primary source citations.",
             "ts": now_hhmm(),
             "sources": [],
         }
@@ -568,7 +568,7 @@ for msg in st.session_state["messages"]:
     row_class = "msg-right" if is_user else "msg-left"
     bubble_class = "bubble-user" if is_user else "bubble-assistant"
 
-    avatar = "🧑‍💻" if is_user else "🤖"
+    avatar = "🧑‍💻" if is_user else "🔎"
 
     content = (msg.get("content", "") or "").replace("\n", "<br>")
     ts = msg.get("ts", "")
