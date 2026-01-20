@@ -1,215 +1,206 @@
-🧠 RAG Knowledge Navigator
+# 🤖 RAG Knowledge Navigator
 
-Grounded Question Answering over Basel III & Prudential Regulation Documents
+**Project #4 — Retrieval-Augmented Generation (RAG) Chatbot**
 
-Overview
+A production-oriented **Retrieval-Augmented Generation (RAG)** chatbot that answers questions **strictly grounded in regulatory PDF documents**, with **citations, guardrails, reranking, metadata filtering, and short-term conversational memory**.
 
-RAG Knowledge Navigator is a Retrieval-Augmented Generation (RAG) application designed to answer complex regulatory and banking questions strictly grounded in official supervisory documents.
+This project demonstrates how Large Language Models (LLMs) can be safely used in **high-risk, regulated domains** where hallucinations and vague answers are unacceptable.
 
-Unlike generic chatbots, this system:
+---
 
-Retrieves verifiable passages from regulatory PDFs
+## 🎯 Project Goal
 
-Generates answers only from retrieved evidence
+The goal of this project is to build a chatbot that:
 
-Explicitly returns “Not found in the provided documents” when information is missing
+* Retrieves the **most relevant document passages**
+* Generates **accurate, grounded answers**
+* Shows **explicit citations**
+* **Refuses to answer** when the information is not present
+* Handles **follow-up questions** without hallucination
 
-Displays clear citations (document + page) for every answer
+The system is designed to behave like a **regulatory knowledge assistant**, not a general-purpose chatbot.
 
-The project demonstrates how modern LLMs can be safely applied in high-risk domains such as banking regulation, where hallucinations are unacceptable.
+---
 
-Why this project exists
+## 📄 Knowledge Base: Document Scope & Meaning
 
-Banking regulation (Basel III, Pillar 2, capital buffers) is:
+This project is built around a **curated set of authoritative regulatory PDF documents** related to **banking capital adequacy and prudential regulation**, primarily under the **Basel III framework**.
 
-Dense
+These documents are **dense, technical, and rule-driven**, making them ideal for evaluating a Retrieval-Augmented Generation system.
 
-Fragmented across long PDFs
+### 🏦 Why These PDFs Were Chosen
 
-Hard to query precisely
+The PDFs:
 
-This project turns static regulatory documents into an interactive, auditable knowledge system — something that could realistically be used by:
+* Are **official regulatory texts**, not summaries or blogs
+* Contain **precise definitions, thresholds, and conditions**
+* Require **exact wording and context**
+* Penalize hallucination or speculative answers
 
-Risk analysts
+This makes them a **high-risk knowledge domain**, where incorrect answers would be unacceptable in real-world usage.
 
-Compliance teams
+### 📘 What the Documents Cover
 
-Regulatory reporting units
+The documents include detailed explanations of:
 
-Documents Ingested
+* Capital Conservation Buffer (CCB)
+* Countercyclical Capital Buffer (CCyB)
+* Common Equity Tier 1 (CET1) capital
+* Risk-Weighted Assets (RWA)
+* Buffer activation and release mechanisms
+* Supervisory intent and macroprudential regulation
 
-The knowledge base was built exclusively from the following official regulatory sources:
+Example documents used:
 
-Basel III – A Global Regulatory Framework for More Resilient Banks
+* *Basel III – Capital Buffers: Conservation & Countercyclical*
+* *Basel III – A Global Regulatory Framework for More Resilient Banks*
 
-Basel III – Finalising Post-Crisis Reforms (2017)
+### 🧠 Why This Matters for RAG
 
-Basel III Capital Buffers – Conservation & Countercyclical Buffers
+These PDFs are particularly suitable for RAG because:
 
-PRA Supervisory Statement – Pillar 2 Capital Methodology
+* Answers must be **directly supported by retrieved text**
+* Many questions are **contextual follow-ups** (“how does it differ?”, “when is it released?”)
+* The system must correctly handle **short-term conversational memory**
+* The assistant must **refuse answers** when evidence is missing
 
-No external knowledge, websites, or pretrained facts are used during answering.
+This dataset acts as a **stress test** for retrieval accuracy, grounding, and safety.
 
-How it works (Architecture)
+---
 
-1. Ingestion Pipeline
+## 🧩 Core Functionality
 
-PDFs are loaded and cleaned
+### ✅ Document Ingestion Pipeline
 
-Documents are split into semantic chunks
+* PDF loading
+* Chunking with overlap
+* Embedding generation
+* Vector storage using **Chroma**
 
-Each chunk is embedded and stored in ChromaDB
+**Flow:** PDF → chunks → embeddings → vector database
 
-Metadata includes document name and page number
+---
 
-2. Retrieval
+### ✅ Semantic Retrieval (Top-K)
 
-User query is optionally expanded (e.g. CCB → Capital Conservation Buffer)
+* Vector similarity search
+* Deduplication by document, page, and chunk
+* Optional document-level filtering
 
-Top-K relevant chunks are retrieved
+---
 
-Optional reranking improves relevance
+### ✅ Answer Generation with Citations
 
-Confidence gates reject weak matches
+* LLM answers using **retrieved context only**
+* Automatic refusal when information is missing
+* Clear citations displayed per answer
 
-3. Answer Generation
+---
 
-The LLM receives:
+### ✅ Short-Term Conversation Memory (Grounded)
 
-The user question
+* Follow-up questions rewritten using previous user context
+* Improves retrieval without introducing hallucinations
+* Example supported queries:
 
-Only the retrieved document context
+  * “How does it differ from the other one?”
+  * “When is it released?”
+  * “Compare them”
 
-Strict system rules enforce:
+---
 
-No external knowledge
+### ✅ Guardrails & Safety
 
-Exact fallback message if answer is missing
+**Prompt-Injection Protection**
 
-4. Citation Layer
+* Detects attempts such as:
+  * “ignore previous instructions”
+  * “print system prompt”
+  * “DAN”
+* Safe refusal response
 
-Final answers include a structured Sources section
+**Document-Only Enforcement**
 
-Each citation maps directly to the ingested PDFs
+* Strict mode prevents use of outside knowledge
+* Returns *“Not found in the provided documents”* when needed
 
-Key Features
-✅ Grounded Answers Only
+---
 
-If the documents do not contain the answer, the system responds:
+## 🎛️ User Interface
 
-“Not found in the provided documents.”
+Built with **Streamlit**, featuring:
 
-This is enforced both before and after generation.
+* Chat-style UI
+* Document selector (metadata filter)
+* Strict mode toggle
+* System health panel
+* Vector count visibility
+* Backend & model transparency
 
-🧾 Explicit Citations
+---
 
-Every valid answer includes:
+## ⭐ Nice-to-Have Features (Implemented vs Not Implemented)
 
-Document name
+### ✅ Implemented
 
-Page reference
+| Feature | Status |
+| :--- | :--- |
+| Reranking | ✅ Implemented |
+| Metadata filtering (by document) | ✅ Implemented |
+| Short-term conversation memory | ✅ Implemented |
+| Guardrails (prompt injection + grounding) | ✅ Implemented |
 
-This makes responses auditable and defensible.
+---
 
-🔒 Strict Mode
+### ❌ Not Implemented (By Design)
 
-When enabled:
+| Feature | Reason |
+| :--- | :--- |
+| Hybrid search (BM25 + vector) | Project focused on semantic retrieval |
+| Observability dashboards | Out of scope for current evaluation |
 
-Keyword overlap thresholds are enforced
+These omissions are **intentional and documented**, not oversights.
 
-Low-confidence retrievals are rejected
+---
 
-Prevents “reasonable-sounding” hallucinations
+## 🧪 Example Behaviors
 
-🧠 Short-Term Context Awareness
+✔️ Correct follow-up handling  
+✔️ Context-aware comparisons  
+✔️ Citations per answer  
+✔️ Safe refusals when content is missing  
 
-Follow-up questions such as:
+❌ No hallucinations  
+❌ No outside knowledge injection  
 
-“How does it differ from the countercyclical one?”
+---
 
-are rewritten internally using the previous user question, without fabricating context.
+## 🧠 Technical Stack
 
-🛡️ Prompt Injection Guards
+* **Python**
+* **LangChain**
+* **ChromaDB**
+* **OpenAI embeddings & LLM**
+* **Streamlit**
 
-The UI actively detects and blocks:
+---
 
-Instruction overrides
+## 📌 Project Summary
 
-Prompt leakage attempts
+This project demonstrates a **production-grade RAG system** designed for **regulated, high-risk domains**, where correctness, grounding, and explainability matter more than creativity.
 
-Jailbreak patterns
+By grounding every answer in authoritative regulatory documents, the system shows how LLMs can be safely integrated into compliance-sensitive workflows.
 
-💬 Modern Chat UI
+---
 
-Streamlit-based interface
+## 🚀 How to Run
 
-Fixed chat composer
+```bash
+# 1. Ingest documents
+python rag/ingest.py
 
-Message bubbles with timestamps
+# 2. Start the app
+streamlit run app/streamlit_app.py
 
-Source pills per answer
-
-Built for clarity, not demos.
-
-Tech Stack
-
-Python
-
-LangChain
-
-ChromaDB
-
-OpenAI / Local LLM support
-
-Streamlit
-
-dotenv
-
-The system is modular and backend-agnostic (LLM or embeddings can be swapped via .env).
-
-Project Structure (High-Level)
-rag/
-├── ingest.py        # PDF loading, chunking, embedding
-├── retriever.py     # Vector search + scoring
-├── answer.py        # RAG logic, confidence gates, citations
-app/
-├── streamlit_app.py # UI and interaction layer
-data/
-├── raw/             # Original PDFs
-chromadb/            # Persistent vector store
-
-What this project demonstrates
-
-Practical RAG design (not a toy example)
-
-Safety-first LLM usage
-
-Regulatory-grade answer grounding
-
-Clear separation between retrieval, reasoning, and UI
-
-Real-world document complexity handling
-
- Next Steps
-
-Future improvements:
-
-Better follow-up rewriting
-
-Section-aware retrieval
-
-Answer confidence scoring
-
-Exportable audit logs
-
-Final Note
-
-This project is intentionally boring in the right way:
-
-No flashy claims
-
-No hallucinations
-
-No fake intelligence
-
-Just correct answers, or honest uncertainty — which is exactly what high-stakes domains require.
+📄 License
+Academic / educational use.

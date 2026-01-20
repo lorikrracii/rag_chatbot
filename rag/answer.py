@@ -41,47 +41,135 @@ def _get_env_str(name: str, default: str) -> str:
     return raw.strip() if raw and raw.strip() else default
 
 
+# ---------------------- short memory rewrite ----------------------
+_STOPWORDS = {
+    "what","how","why","when","where","who","which","tell","me","explain","describe","define",
+    "is","are","was","were","do","does","did","can","could","should","would","will",
+    "a","an","the","and","or","but","to","of","in","on","for","with","about","from","as",
+    "it","this","that","these","those","they","them","their","there","here","one","other",
+    "please"
+}
+
+def _extract_keywords(text: str, max_terms: int = 8) -> List[str]:
+    toks = _tokenize(text)
+    seen = set()
+    out: List[str] = []
+    for t in toks:
+        if t in _STOPWORDS:
+            continue
+        if t.isdigit():
+            continue
+        if t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+        if len(out) >= max_terms:
+            break
+    return out
+
+
+def _looks_like_followup(q: str) -> bool:
+    ql = (q or "").lower().strip()
+    if not ql:
+        return False
+
+    # very short messages are usually follow-ups
+    if len(ql.split()) <= 5:
+        return True
+
+    # pronouns / pointers / follow-up cues
+    cues = [
+        "it", "that", "this", "those", "they", "them",
+        "the other", "other one", "another one",
+        "compare", "vs", "versus",
+        "difference", "different", "differ",
+        "what about", "and what about", "and that", "what else",
+    ]
+    return any(c in ql for c in cues)
+
+
 def rewrite_followup_question(current_q: str, previous_q: str | None) -> str:
     """
-    Rewrites vague follow-up questions using the previous user question.
-    This enables short-term conversational memory without hallucination.
+    Generic short-memory rewrite:
+    - if the current question is a follow-up, rewrite it into a standalone query
+      using the previous question as context + keyword anchors.
     """
-    if not previous_q:
-        return current_q
+    q = (current_q or "").strip()
+    if not q:
+        return q
+    if not previous_q or not previous_q.strip():
+        return q
 
-    q = current_q.lower()
-    followup_triggers = [
-        "it",
-        "that",
-        "the other",
-        "one",
-        "difference",
-        "different",
-        "differ",
-        "compare",
-        "vs",
-    ]
+    ql = q.lower()
+    prev = previous_q.strip()
 
-    if any(t in q for t in followup_triggers):
+    # If it's already a full standalone question, leave it.
+    if len(q.split()) >= 8 and ("?" in q or ql.startswith(("what","how","why","when","where","who","which"))):
+        return q
+
+    if not _looks_like_followup(q):
+        return q
+
+    # Compare-style followup: make it explicit but still generic
+    if any(x in ql for x in ["difference", "different", "differ", "compare", "vs", "versus"]):
+        anchors = _extract_keywords(prev, max_terms=10)
+        anchor_text = ", ".join(anchors) if anchors else prev
         return (
-            f"{current_q}\n\n"
-            f"Context: The previous question was: {previous_q}"
+            "Compare the key concepts mentioned in the previous question and explain the differences.\n\n"
+            f"Previous question: {prev}\n"
+            f"Follow-up: {q}\n\n"
+            f"Key terms to include: {anchor_text}\n"
+            "Use ONLY the provided documents."
         )
 
-    return current_q
+    # General follow-up rewrite
+    anchors = _extract_keywords(prev, max_terms=10)
+    anchor_text = ", ".join(anchors) if anchors else ""
+
+    rewritten = (
+        "Answer the follow-up question using the previous question as context.\n\n"
+        f"Previous question: {prev}\n"
+        f"Follow-up: {q}\n"
+        "Use ONLY the provided documents."
+    )
+
+    # Add anchors to force retrieval toward the right topic
+    if anchor_text:
+        rewritten += f"\n\nKey terms to focus on: {anchor_text}"
+
+    return rewritten
 
 # ---------------------- query expansion ----------------------
+def _is_compare_question(q: str) -> bool:
+    ql = (q or "").lower()
+    return any(x in ql for x in ["difference", "different", "differ", "compare", "vs", "versus"])
+
+
 def _expand_queries(question: str) -> List[str]:
+    """
+    Normal expansion + (IMPORTANT) forced anchors for compare questions so retrieval
+    pulls BOTH concepts (CCB + CCyB) instead of only one side.
+    """
     q = (question or "").strip()
     if not q:
         return []
     ql = q.lower()
+
     extras: List[str] = []
 
+    # existing keyword expansions
     if "ccyb" in ql:
         extras += ["countercyclical capital buffer", "countercyclical buffer ccyb"]
     if "ccb" in ql:
         extras += ["capital conservation buffer", "conservation buffer ccb"]
+
+    # ✅ FIX: compare follow-ups must pull BOTH sides explicitly
+    if _is_compare_question(q) and ("buffer" in ql or "ccb" in ql or "ccyb" in ql or "conservation" in ql or "countercyclical" in ql):
+        extras += [
+            "capital conservation buffer (CCB) purpose requirements restrictions distributions",
+            "countercyclical capital buffer (CCyB) purpose requirements activation release",
+            "CCB vs CCyB difference compare",
+        ]
 
     if len(q.split()) <= 4:
         return [
@@ -91,7 +179,12 @@ def _expand_queries(question: str) -> List[str]:
             *extras,
         ]
 
-    return [q, f"{q} definition and requirements", f"How is {q} described in the document?", *extras]
+    return [
+        q,
+        f"{q} definition and requirements",
+        f"How is {q} described in the document?",
+        *extras,
+    ]
 
 
 def _tokenize(text: str) -> List[str]:
@@ -140,7 +233,6 @@ def _make_evidence(results: List[RetrievalResult], question: str, limit: int = 6
     evidence: List[Dict[str, Any]] = []
     for r in results[:limit]:
         text = (r.doc.page_content or "").strip()
-        # pick a "best" sentence by keyword overlap
         sentences = re.split(r"(?<=[\.\!\?])\s+", text)
         best = ""
         best_score = -1
@@ -150,6 +242,7 @@ def _make_evidence(results: List[RetrievalResult], question: str, limit: int = 6
             if score > best_score:
                 best_score = score
                 best = s.strip()
+
         evidence.append(
             {
                 "citation": format_citation(r.doc),
@@ -167,22 +260,19 @@ def _should_rerank() -> bool:
 
 
 def _rerank(results: List[RetrievalResult], question: str) -> List[RetrievalResult]:
-    """LLM-based rerank: score top candidates 0..10 for relevance, then sort."""
+    """LLM-based rerank: score candidates 0..10 for relevance, then sort."""
     if not results:
         return results
 
     model = _get_env_str("RAG_RERANK_MODEL", _get_env_str("RAG_LLM_MODEL", "gpt-4o-mini"))
     keep = _get_env_int("RAG_RERANK_KEEP", 8)
-
     llm = ChatOpenAI(model=model, temperature=0.0)
 
     scored: List[Tuple[float, int, RetrievalResult]] = []
     for idx, r in enumerate(results):
-        chunk = (r.doc.page_content or "").strip()
-        chunk = chunk[:1200]  # cost control
+        chunk = (r.doc.page_content or "").strip()[:1200]
 
         prompt = (
-            "You are scoring relevance for retrieval.\n"
             "Score how relevant the CHUNK is to the QUESTION on a 0-10 scale.\n"
             "Return ONLY a number.\n\n"
             f"QUESTION:\n{question}\n\n"
@@ -221,20 +311,27 @@ def answer_question(
     source_filename: Optional[str] = None,
     strict: Optional[bool] = None,
     user_query: Optional[str] = None,
+    previous_user_question: Optional[str] = None,
 ) -> Dict[str, Any]:
-    question = (question or "").strip()
-    raw_user = (user_query or question).strip()
-
-    # --- short-term conversational memory (FOLLOW-UP FIX) ---
-    previous_q = None
-    if user_query and user_query != question:
-        previous_q = question
-
-    effective_question = rewrite_followup_question(raw_user, previous_q)
-
-
-    if not question:
+    raw_user = (user_query or question or "").strip()
+    if not raw_user:
         return {"answer": "Please enter a question.", "citations": [], "evidence": [], "retrieved": []}
+
+    # Only rewrite if the current message looks like a follow-up.
+    def _looks_like_followup(q: str) -> bool:
+        ql = (q or "").lower().strip()
+        if not ql:
+            return False
+        if len(ql.split()) <= 4:
+            return True
+        cues = ["it", "that", "this", "those", "they", "them", "other", "compare", "vs", "versus", "difference"]
+        return any(c in ql for c in cues)
+
+    if previous_user_question and _looks_like_followup(raw_user):
+        effective_question = rewrite_followup_question(raw_user, previous_user_question)
+    else:
+        effective_question = raw_user
+
 
     top_k = k if isinstance(k, int) and k > 0 else _get_env_int("RAG_TOP_K", 12)
 
@@ -248,9 +345,13 @@ def answer_question(
 
     queries = _expand_queries(effective_question) or [effective_question]
 
-    # Prefetch more if reranking
     rerank_prefetch = _get_env_int("RAG_RERANK_PREFETCH", 36)
+
+    # ✅ FIX: for compare questions, pull more candidates so BOTH sides appear
+    is_compare = _is_compare_question(effective_question)
     initial_k = rerank_prefetch if _should_rerank() else top_k
+    if is_compare:
+        initial_k = max(initial_k, top_k * 3)
 
     all_results: List[RetrievalResult] = []
     for q in queries:
@@ -281,11 +382,9 @@ def answer_question(
 
     results = deduped
 
-    # Rerank
     if _should_rerank():
         results = _rerank(results, effective_question)
 
-    # Confidence gate (pre-answer)
     best_distance = min((r.score for r in results), default=None)
     best_kw = max((_keyword_score(effective_question, r.doc.page_content or "") for r in results[: min(10, len(results))]), default=0.0)
 
@@ -329,12 +428,10 @@ def answer_question(
     response = chain.invoke({"question": effective_question, "context": context})
     response_text = (getattr(response, "content", "") or str(response) or "").strip()
 
-    # Confidence gate (post-answer): if model says NOT_FOUND or is too generic
     if response_text == NOT_FOUND or (NOT_FOUND in response_text):
         return {"answer": NOT_FOUND, "citations": [], "evidence": [], "retrieved": []}
 
     if strict_mode:
-        # If answer doesn't share any meaningful tokens with the question, reject.
         overlap = _keyword_score(effective_question, response_text)
         if overlap < 0.05:
             return {"answer": NOT_FOUND, "citations": [], "evidence": [], "retrieved": []}
@@ -354,4 +451,5 @@ def answer_question(
         "embed_model": model_name,
         "llm_model": _get_env_str("RAG_LLM_MODEL", "gpt-4o-mini"),
         "rerank": _should_rerank(),
+        "effective_question": effective_question,
     }

@@ -212,6 +212,7 @@ def _llm_info_from_env() -> Dict[str, str]:
 def _embed_info_from_env() -> Dict[str, str]:
     return {"backend": "openai", "model": os.getenv("RAG_EMBED_MODEL", "text-embedding-3-small")}
 
+
 # --- Auto-ingest on Streamlit Cloud (first run) ---
 def ensure_chroma_exists() -> None:
     chroma_dir = os.getenv("CHROMA_DIR", "chromadb")
@@ -239,10 +240,58 @@ def ensure_chroma_exists() -> None:
     with st.spinner("📦 First run: building the vector database (one-time)…"):
         ingest(cfg)
 
+
 # Run once per session
 if "BOOTSTRAPPED" not in st.session_state:
     ensure_chroma_exists()
     st.session_state["BOOTSTRAPPED"] = True
+
+
+# ✅ NEW: get last N meaningful user questions (skips tiny follow-ups)
+def get_last_meaningful_user_questions(messages: List[Dict[str, Any]], n: int = 2) -> List[str]:
+    def is_meaningful(q: str) -> bool:
+        q = (q or "").strip()
+        if not q:
+            return False
+        ql = q.lower()
+
+        tiny_followups = {
+            "compare", "compare them", "compare them.", "them", "it", "that", "this",
+            "what about it", "what about it?", "what about the other one", "the other one",
+            "and how", "and why", "and what", "what else",
+            "and how is it interpreted", "and how is it interpreted?",
+            "how is it interpreted", "how is it interpreted?",
+        }
+        if ql in tiny_followups:
+            return False
+
+        # Keep short domain questions like "Explain CCB", "what is ccb", etc.
+        domain_markers = ["ccb", "ccyb", "cet1", "rwa", "hhi", "pillar", "basel", "pra", "buffer", "capital", "risk"]
+        if len(q.split()) <= 4 and not any(m in ql for m in domain_markers):
+            return False
+
+        return True
+
+    users = [
+        m.get("content", "").strip()
+        for m in messages
+        if m.get("role") == "user" and m.get("content", "").strip()
+    ]
+
+    out: List[str] = []
+    for q in reversed(users[:-1]):  # exclude current
+        if is_meaningful(q):
+            out.append(q)
+        if len(out) >= n:
+            break
+
+    return list(reversed(out))
+
+
+# ✅ keep compatibility with your call-site name
+def get_previous_user_question(messages: List[Dict[str, Any]]) -> Optional[str]:
+    prev = get_last_meaningful_user_questions(messages, n=1)
+    return prev[0] if prev else None
 
 
 def health_check() -> Dict[str, Any]:
@@ -268,7 +317,6 @@ def health_check() -> Dict[str, Any]:
     try:
         from rag.retriever import get_vectorstore
 
-        # ✅ OpenAI-only signature: get_vectorstore(..., embed_model=...)
         vs = get_vectorstore(
             persist_directory=chroma_dir,
             collection_name=collection,
@@ -286,13 +334,6 @@ def health_check() -> Dict[str, Any]:
         info["error"] = f"{type(e).__name__}: {repr(e)}"
 
     return info
-
-def highlight_terms(text: str, query: str) -> str:
-    terms = sorted({t for t in re.findall(r"[A-Za-z0-9]{3,}", (query or "").lower())}, key=len, reverse=True)
-    safe = html.escape(text or "")
-    for t in terms[:12]:
-        safe = re.sub(rf"(?i)\b({re.escape(t)})\b", r"<mark>\1</mark>", safe)
-    return safe
 
 
 def extract_sources(answer_text: str) -> List[str]:
@@ -315,22 +356,6 @@ def answer_without_sources(answer_text: str) -> str:
     if not answer_text:
         return ""
     return answer_text.split(marker, 1)[0].strip() if marker in answer_text else answer_text.strip()
-
-
-def normalize_query(q: str) -> str:
-    q = (q or "").strip()
-    if len(q.split()) <= 3:
-        return f"Explain {q} in the context of the uploaded documents."
-    return q
-
-
-def build_memory_hint(messages: List[Dict[str, Any]], max_user_turns: int = 2) -> str:
-    users = [m.get("content", "") for m in messages if m.get("role") == "user"]
-    users = [u.strip() for u in users if u.strip()]
-    last = users[-max_user_turns:]
-    if not last:
-        return ""
-    return "Previous user questions:\n- " + "\n- ".join(last)
 
 
 def autoscroll_to_anchor() -> None:
@@ -360,11 +385,27 @@ _INJECTION = re.compile(
 _PUNCT_ONLY = re.compile(r"^\s*[\W_]+\s*$")
 
 
+_SMALLTALK_RE = re.compile(r"^\s*(hi|hello|hey|yo|sup)\b", re.IGNORECASE)
+_SMALLTALK_PHRASES = {
+    "how are you",
+    "who are you",
+    "thank you",
+    "thanks",
+    "thx",
+}
+
 def is_smalltalk(text: str) -> bool:
     t = (text or "").strip().lower()
     if not t:
         return False
-    return any(p in t for p in ["hi", "hello", "hey", "yo", "sup", "how are you", "who are you", "thank you", "thanks", "thx"]) and len(t.split()) <= 8
+
+    if _SMALLTALK_RE.match(t):
+        return True
+
+    if any(phrase in t for phrase in _SMALLTALK_PHRASES) and len(t.split()) <= 8:
+        return True
+
+    return False
 
 
 def is_injection(text: str) -> bool:
@@ -584,19 +625,19 @@ if pending:
     st.session_state["pending_prompt"] = None
     st.session_state["is_processing"] = True
 
-    if is_smalltalk(pending):
-        st.session_state["is_processing"] = False
-        st.session_state["last_sources"] = []
-        st.session_state["messages"].append(
-            {"role": "assistant", "content": smalltalk_reply(pending), "ts": now_hhmm(), "sources": []}
-        )
-        st.rerun()
-
     if is_injection(pending):
         st.session_state["is_processing"] = False
         st.session_state["last_sources"] = []
         st.session_state["messages"].append(
             {"role": "assistant", "content": injection_reply(), "ts": now_hhmm(), "sources": []}
+        )
+        st.rerun()
+
+    if is_smalltalk(pending):
+        st.session_state["is_processing"] = False
+        st.session_state["last_sources"] = []
+        st.session_state["messages"].append(
+            {"role": "assistant", "content": smalltalk_reply(pending), "ts": now_hhmm(), "sources": []}
         )
         st.rerun()
 
@@ -623,17 +664,27 @@ if pending:
 
     try:
         with st.spinner("Synthesizing response..."):
-            memory = build_memory_hint(st.session_state["messages"], max_user_turns=2)
-            base_query = normalize_query(pending)
-            query = f"{memory}\n\nCurrent question:\n{base_query}" if memory else base_query
+            # ✅ get last 2 meaningful questions (for compare-them)
+            prev2 = get_last_meaningful_user_questions(st.session_state["messages"], n=2)
+            prev_q = prev2[-1] if prev2 else None
+
+            # ✅ optional: expand "compare them" using last two meaningful questions
+            pending_norm = pending.strip().lower()
+            if pending_norm in {"compare them", "compare them.", "compare"} and len(prev2) == 2:
+                pending = (
+                    "Compare these two topics using ONLY the provided documents:\n"
+                    f"1) {prev2[0]}\n"
+                    f"2) {prev2[1]}"
+                )
 
             out: Dict[str, Any] = answer_question(
-                query,
+                pending,
                 k=None,
                 llm_model=None,
                 source_filename=None if doc_choice == "All" else doc_choice,
                 strict=strict_mode,
                 user_query=pending,
+                previous_user_question=prev_q,
             )
 
         st.session_state["is_processing"] = False
